@@ -1,0 +1,88 @@
+version: "3.9"
+
+services:
+
+  # ─── Tier 1: Frontend (Tetris UI) ───────────────────────
+  frontend:
+    image: bsord/tetris:latest
+    container_name: tetris-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - tetris-net
+    restart: unless-stopped
+    labels:
+      app: tetris
+      tier: frontend
+
+  # ─── Tier 2: Backend API ────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tetris-backend
+    ports:
+      - "5000:5000"
+    environment:
+      # Database connection — matches the db service below
+      DB_HOST:     postgres
+      DB_PORT:     "5432"
+      DB_NAME:     tetrisdb
+      DB_USER:     tetris
+      DB_PASSWORD: tetrispassword   # Use Docker secrets in production!
+      FLASK_ENV:   development
+      PORT:        "5000"
+      APP_VERSION: "1.0.0"
+    depends_on:
+      postgres:
+        condition: service_healthy  # Wait for DB to be ready
+    networks:
+      - tetris-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    labels:
+      app: tetris
+      tier: backend
+
+  # ─── Tier 3: Database ───────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: tetris-postgres
+    environment:
+      POSTGRES_DB:       tetrisdb
+      POSTGRES_USER:     tetris
+      POSTGRES_PASSWORD: tetrispassword
+      PGDATA:            /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data   # Persist DB data
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro  # Init schema
+    ports:
+      - "5432:5432"      # Optional: expose for local DB tools (DBeaver, pgAdmin)
+    networks:
+      - tetris-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tetris -d tetrisdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    labels:
+      app: tetris
+      tier: database
+networks:
+  tetris-net:
+    driver: bridge
+    name: tetris-network
+volumes:
+  postgres-data:
+    name: tetris-postgres-data

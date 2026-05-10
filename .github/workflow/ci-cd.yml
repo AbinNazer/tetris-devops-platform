@@ -1,0 +1,238 @@
+# .github/workflows/ci-cd.yaml
+# ============================================================
+# CI/CD Pipeline: Tetris Three-Tier App
+# Triggers: push to main, PR to main, manual dispatch
+#
+# Stages:
+# 1. Test         — Run backend unit tests
+# 2. Build        — Build Docker image
+# 3. Scan         — Trivy vulnerability scan
+# 4. Push         — Push image to Docker Hub
+# 5. Update K8s   — Update image tag in manifests (GitOps)
+# ============================================================
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "backend/**"
+  workflow_dispatch:    # Allow manual trigger from GitHub UI
+
+# Cancel in-progress runs when a new push arrives on the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOCKER_HUB_USER: ${{ secrets.DOCKER_HUB_USERNAME }}
+  IMAGE_NAME: tetris-backend
+  REGISTRY: docker.io
+
+jobs:
+
+  # ──────────────────────────────────────────────────────────
+  # Job 1: Test
+  # ──────────────────────────────────────────────────────────
+  test:
+    name: Run Backend Tests
+    runs-on: ubuntu-latest
+
+    services:
+      # Spin up a real PostgreSQL for integration tests
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: tetrisdb_test
+          POSTGRES_USER: tetris
+          POSTGRES_PASSWORD: testpassword
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tetris"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests with coverage
+        working-directory: backend
+        env:
+          DB_HOST: localhost
+          DB_PORT: "5432"
+          DB_NAME: tetrisdb_test
+          DB_USER: tetris
+          DB_PASSWORD: testpassword
+        run: |
+          pytest tests/ -v \
+            --cov=app \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --tb=short
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        with:
+          file: backend/coverage.xml
+          fail_ci_if_error: false
+
+  # ──────────────────────────────────────────────────────────
+  # Job 2: Build & Scan & Push
+  # Only runs on push to main (not on PRs)
+  # ──────────────────────────────────────────────────────────
+  build-scan-push:
+    name: Build → Scan → Push
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Generate image tag ──────────────────────────────
+      # Tag format: 1.0.0-abc1234  (semantic version + git SHA)
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.DOCKER_HUB_USER }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+          labels: |
+            org.opencontainers.image.title=Tetris Backend
+            org.opencontainers.image.description=Flask API for Tetris K8s project
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      # ── Docker Buildx (multi-platform builds) ──────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Login to Docker Hub ─────────────────────────────
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}    # Use Access Token, not password!
+
+      # ── Build (no push yet — scan first) ───────────────
+      - name: Build Docker image (local only)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: false
+          load: true        # Load into local Docker daemon for scanning
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha    # GitHub Actions cache (speeds up builds)
+          cache-to: type=gha,mode=max
+
+      # ── Security Scan with Trivy ────────────────────────
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin v0.50.0
+
+      - name: Scan image for vulnerabilities
+        id: trivy-scan
+        run: |
+          trivy image \
+            --exit-code 0 \
+            --severity HIGH,CRITICAL \
+            --format table \
+            --output trivy-results.txt \
+            ${{ env.DOCKER_HUB_USER }}/${{ env.IMAGE_NAME }}:latest
+          cat trivy-results.txt
+
+      - name: Upload Trivy scan results
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: trivy-results.txt
+
+      - name: Fail pipeline on CRITICAL vulnerabilities
+        run: |
+          trivy image \
+            --exit-code 1 \
+            --severity CRITICAL \
+            --ignore-unfixed \
+            ${{ env.DOCKER_HUB_USER }}/${{ env.IMAGE_NAME }}:latest
+        # Remove --exit-code 1 if you want warnings only (not blocking)
+
+      # ── Scan Kubernetes manifests ───────────────────────
+      - name: Scan K8s manifests with Trivy
+        run: |
+          trivy config \
+            --severity HIGH,CRITICAL \
+            --exit-code 0 \
+            k8s/
+
+      # ── Push to Docker Hub ──────────────────────────────
+      - name: Push image to Docker Hub
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64    # Multi-arch support
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Output image digest
+        run: echo "Image pushed successfully ✓"
+
+  update-manifests:
+    name: Update K8s Image Tag (GitOps)
+    runs-on: ubuntu-latest
+    needs: build-scan-push
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}     # PAT with repo write permission
+          fetch-depth: 0
+
+      - name: Update image tag in backend deployment
+        run: |
+          IMAGE_TAG=$(echo "${{ github.sha }}" | cut -c1-7)
+          NEW_IMAGE="${{ env.DOCKER_HUB_USER }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+
+          # Replace image tag in K8s manifest using sed
+          sed -i "s|image: ${{ env.DOCKER_HUB_USER }}/${{ env.IMAGE_NAME }}:.*|image: ${NEW_IMAGE}|g" \
+            k8s/base/03-backend.yaml
+
+          echo "Updated to: ${NEW_IMAGE}"
+
+      - name: Commit and push updated manifest
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/base/03-backend.yaml
+          git diff --staged --quiet || git commit -m \
+            "ci: update backend image to ${{ github.sha }} [skip ci]"
+          git push

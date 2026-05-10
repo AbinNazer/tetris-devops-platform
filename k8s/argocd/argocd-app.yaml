@@ -1,0 +1,62 @@
+# k8s/argocd/argocd-app.yaml
+# ============================================================
+# ArgoCD Application — Tetris GitOps
+#
+# Install ArgoCD first:
+#   kubectl create namespace argocd
+#   kubectl apply -n argocd -f \
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tetris-app
+  namespace: argocd      # ArgoCD Application resources always go in argocd namespace
+  labels:
+    app.kubernetes.io/name: tetris
+  # Cascade delete: when this ArgoCD App is deleted, also delete K8s resources
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  # ── Source: Where to read manifests from ───────────────
+  source:
+    # UPDATE THIS: your GitHub repo URL
+    repoURL: https://github.com/YOUR_USERNAME/tetris-k8s-devops.git
+    targetRevision: main        # Track the main branch
+    path: k8s/base              # Path to manifests within the repo
+
+  # ── Destination: Where to deploy ───────────────────────
+  destination:
+    server: https://kubernetes.default.svc   # In-cluster Kubernetes API
+    namespace: tetris
+
+  # ── Sync Policy ────────────────────────────────────────
+  syncPolicy:
+    automated:
+      prune: true        # Delete K8s resources removed from Git
+      selfHeal: true     # Revert manual changes (drift correction)
+      allowEmpty: false  # Prevent accidental deletion of all resources
+
+    syncOptions:
+      - CreateNamespace=true         # Create namespace if it doesn't exist
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true               # Delete resources last (after new ones are up)
+      - ApplyOutOfSyncOnly=true      # Only apply changed resources
+      - ServerSideApply=true         # Better conflict resolution
+
+    # Retry on failure — handles transient API server errors
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+  # ── Health Assessment Overrides ────────────────────────
+  ignoreDifferences:
+    # Ignore HPA's current replica count (it changes dynamically)
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+      jsonPointers:
+        - /spec/minReplicas
+        - /spec/maxReplicas

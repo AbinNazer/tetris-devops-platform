@@ -1,0 +1,146 @@
+# ── Grafana ────────────────────────────────────────────────
+grafana:
+  enabled: true
+  adminPassword: "admin123"    # Change this! Use a K8s secret in production.
+
+  service:
+    type: ClusterIP
+
+  # Access:  kubectl port-forward svc/monitoring-grafana -n monitoring 3000:80
+  # Login:   admin / admin123
+
+  # Pre-load dashboards via ConfigMaps
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      searchNamespace: ALL
+
+  # Provision the Tetris custom dashboard automatically
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: tetris
+          orgId: 1
+          folder: "Tetris"
+          type: file
+          options:
+            path: /var/lib/grafana/dashboards/tetris
+
+  persistence:
+    enabled: true
+    size: 1Gi
+
+# ── Prometheus ─────────────────────────────────────────────
+prometheus:
+  enabled: true
+
+  prometheusSpec:
+    retention: 15d          # Keep 15 days of metrics
+    retentionSize: "5GB"
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 5Gi
+
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
+
+    # Scrape all pods with prometheus.io/scrape: "true" annotation
+    additionalScrapeConfigs:
+      - job_name: tetris-backend
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [tetris]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+
+# ── AlertManager ───────────────────────────────────────────
+alertmanager:
+  enabled: true
+
+  config:
+    global:
+      resolve_timeout: 5m
+
+    route:
+      group_by: [alertname, namespace]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: null-receiver   # Replace with Slack/PagerDuty in production
+
+    receivers:
+      - name: null-receiver     # Placeholder — configure Slack below
+      # Uncomment for Slack alerts:
+      # - name: slack-alerts
+      #   slack_configs:
+      #     - api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+      #       channel: '#alerts'
+      #       title: '{{ .GroupLabels.alertname }}'
+      #       text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+
+# ── Node Exporter ──────────────────────────────────────────
+nodeExporter:
+  enabled: true
+
+# ── kube-state-metrics ─────────────────────────────────────
+kubeStateMetrics:
+  enabled: true
+
+# ── Default Alert Rules ────────────────────────────────────
+defaultRules:
+  create: true
+  rules:
+    alertmanager: true
+    etcd: false           # Disable for managed K8s (EKS/GKE/AKS)
+    configReloaders: true
+    general: true
+    k8sContainerCpuUsageSecondsTotal: true
+    k8sContainerMemoryCache: true
+    k8sPodOwner: true
+    kubeApiserverAvailability: true
+    kubeApiserverBurnrate: true
+    kubeApiserverHistogram: true
+    kubeApiserverSlos: true
+    kubelet: true
+    kubePrometheusGeneral: true
+    kubePrometheusNodeRecording: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: true
+    kubernetesSystem: true
+    kubeSchedulerAlerting: false   # Disable for managed K8s
+    kubeStateMetrics: true
+    network: true
+    node: true
+    nodeExporterAlerting: true
+    nodeExporterRecording: true
+    prometheus: true
+    prometheusOperator: true

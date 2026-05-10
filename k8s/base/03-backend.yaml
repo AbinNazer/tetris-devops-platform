@@ -1,0 +1,135 @@
+# k8s/base/03-backend.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: tetris
+  labels:
+    app: backend
+    app.kubernetes.io/name: tetris
+    tier: backend
+  annotations:
+    # ArgoCD will update this image tag automatically via CI/CD
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: 2               # 2 replicas = high availability, zero-downtime deploys
+  selector:
+    matchLabels:
+      app: backend
+  # Rolling update strategy: replace pods one at a time, never 0 running
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0     # Never take all replicas down at once
+      maxSurge: 1           # Temporarily run 1 extra pod during updates
+  template:
+    metadata:
+      labels:
+        app: backend
+        tier: backend
+      annotations:
+        # Prometheus scrape annotations — autodiscovery
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "5000"
+        prometheus.io/path:   "/metrics"
+    spec:
+      # Security: don't run as root
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+ 
+      # Graceful shutdown: allow in-flight requests to finish
+      terminationGracePeriodSeconds: 30
+ 
+      containers:
+        - name: backend
+          # UPDATE THIS: replace 'yourdockerhubuser' with your Docker Hub username
+          image: yourdockerhubuser/tetris-backend:latest
+          imagePullPolicy: Always   # Always pull in production to get security patches
+ 
+          ports:
+            - containerPort: 5000
+              name: http
+ 
+          # Non-sensitive config from ConfigMap
+          envFrom:
+            - configMapRef:
+                name: tetris-config
+ 
+          # Sensitive config from Secret
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tetris-secret
+                  key: DB_PASSWORD
+ 
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+ 
+          # Liveness probe: if /health fails 3 times, restart pod
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 5
+ 
+          # Readiness probe: only send traffic when app is ready
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 5
+ 
+          # Read-only filesystem (security hardening)
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+ 
+          # Temp dirs needed by Gunicorn
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+ 
+      volumes:
+        - name: tmp
+          emptyDir: {}
+ 
+      # Spread pods across different nodes for resilience
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: backend
+ 
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: tetris
+  labels:
+    app: backend
+    app.kubernetes.io/name: tetris
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 5000
+      targetPort: 5000
+      name: http

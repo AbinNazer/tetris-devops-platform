@@ -1,0 +1,179 @@
+pipeline {
+
+    agent any
+
+    environment {
+        DOCKER_HUB_USER = credentials('dockerhub-username')  // Credential ID
+        IMAGE_NAME      = 'tetris-backend'
+        IMAGE_TAG       = "${env.GIT_COMMIT.take(7)}"         // Short SHA
+        FULL_IMAGE      = "${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
+    }
+
+    // Trigger on any push to main
+    triggers {
+        githubPush()
+    }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        skipDefaultCheckout()
+    }
+
+    stages {
+
+        // ── Stage 1: Checkout ──────────────────────────────
+        stage('Checkout') {
+            steps {
+                checkout scm
+                echo "Building commit: ${env.GIT_COMMIT}"
+                echo "Branch: ${env.GIT_BRANCH}"
+            }
+        }
+
+        // ── Stage 2: Test ──────────────────────────────────
+        stage('Test') {
+            steps {
+                dir('backend') {
+                    sh '''
+                        python3 -m venv venv
+                        . venv/bin/activate
+                        pip install -r requirements.txt
+                        pytest tests/ -v --tb=short \
+                            --cov=app \
+                            --cov-report=xml:coverage.xml \
+                            --cov-report=term
+                    '''
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'backend/test-results.xml'
+                    publishCoverage adapters: [coberturaAdapter('backend/coverage.xml')]
+                }
+            }
+        }
+
+        // ── Stage 3: Build Docker Image ────────────────────
+        stage('Build') {
+            steps {
+                dir('backend') {
+                    script {
+                        dockerImage = docker.build("${FULL_IMAGE}", "--no-cache .")
+                    }
+                }
+                echo "Built image: ${FULL_IMAGE}"
+            }
+        }
+
+        // ── Stage 4: Security Scan with Trivy ──────────────
+        stage('Security Scan') {
+            steps {
+                script {
+                    // Install Trivy if not present
+                    sh '''
+                        if ! command -v trivy &>/dev/null; then
+                            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+                                | sh -s -- -b /usr/local/bin
+                        fi
+                    '''
+
+                    // Scan image — report only, don't fail
+                    sh """
+                        trivy image \
+                            --severity HIGH,CRITICAL \
+                            --exit-code 0 \
+                            --format table \
+                            --output trivy-report.txt \
+                            ${FULL_IMAGE}
+                        cat trivy-report.txt
+                    """
+
+                    // Fail on unfixed CRITICAL vulnerabilities
+                    sh """
+                        trivy image \
+                            --severity CRITICAL \
+                            --ignore-unfixed \
+                            --exit-code 1 \
+                            ${FULL_IMAGE}
+                    """
+
+                    // Scan K8s manifests
+                    sh "trivy config --severity HIGH,CRITICAL --exit-code 0 k8s/"
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'trivy-report.txt', allowEmptyArchive: true
+                }
+            }
+        }
+
+        // ── Stage 5: Push to Docker Hub ────────────────────
+        stage('Push') {
+            when {
+                branch 'main'
+            }
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-credentials',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh "echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin"
+                    sh "docker push ${FULL_IMAGE}"
+                    // Also push latest tag
+                    sh "docker tag ${FULL_IMAGE} ${DOCKER_HUB_USER}/${IMAGE_NAME}:latest"
+                    sh "docker push ${DOCKER_HUB_USER}/${IMAGE_NAME}:latest"
+                    sh "docker logout"
+                }
+            }
+        }
+
+        // ── Stage 6: Update K8s Manifests (GitOps) ────────
+        stage('Update Manifests') {
+            when {
+                branch 'main'
+            }
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'github-credentials',
+                    usernameVariable: 'GIT_USER',
+                    passwordVariable: 'GIT_PASS'
+                )]) {
+                    sh """
+                        git config user.name "jenkins-bot"
+                        git config user.email "jenkins@ci.local"
+
+                        # Update image tag in backend deployment manifest
+                        sed -i 's|image: ${DOCKER_HUB_USER}/${IMAGE_NAME}:.*|image: ${FULL_IMAGE}|g' \
+                            k8s/base/03-backend.yaml
+
+                        git add k8s/base/03-backend.yaml
+                        git diff --staged --quiet || git commit -m \
+                            "ci: update backend image to ${IMAGE_TAG} [skip ci]"
+
+                        git push https://${GIT_USER}:${GIT_PASS}@github.com/YOUR_USERNAME/tetris-k8s-devops.git main
+                    """
+                }
+            }
+        }
+    }
+
+    // ── Post-build Actions ─────────────────────────────────
+    post {
+        always {
+            // Clean up local Docker images to save disk
+            sh "docker rmi ${FULL_IMAGE} || true"
+            cleanWs()
+        }
+        success {
+            echo "✅ Pipeline SUCCESS — ${FULL_IMAGE} deployed"
+        }
+        failure {
+            echo "❌ Pipeline FAILED — check logs above"
+            // Uncomment to send Slack notifications:
+            // slackSend channel: '#deployments', message: "Build FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+        }
+    }
+}
