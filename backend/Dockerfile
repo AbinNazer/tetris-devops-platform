@@ -51,10 +51,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')" \
     || exit 1
 
-# Use Gunicorn (production WSGI server) instead of Flask dev server
-# - 4 worker processes
-# - 2 threads per worker
-# - Logs to stdout (captured by Docker/K8s)
 CMD ["gunicorn", \
      "--workers", "4", \
      "--threads", "2", \

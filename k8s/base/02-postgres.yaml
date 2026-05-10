@@ -9,7 +9,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce       # Only one node can mount at a time (correct for DB)
-  storageClassName: standard  # Use 'gp2' on EKS, 'standard' on GKE/Minikube
+  storageClassName: standard
   resources:
     requests:
       storage: 2Gi
@@ -26,7 +26,7 @@ metadata:
     tier: database
 spec:
   serviceName: "postgres-service"
-  replicas: 1               # Single replica — use Patroni/CloudSQL for HA
+  replicas: 1
   selector:
     matchLabels:
       app: postgres
@@ -118,4 +118,4 @@ spec:
     - port: 5432
       targetPort: 5432
       name: postgres
-  type: ClusterIP            # Internal only — DB should never be publicly exposed
+  type: ClusterIP        

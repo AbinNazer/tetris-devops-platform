@@ -32,13 +32,13 @@ services:
       DB_PORT:     "5432"
       DB_NAME:     tetrisdb
       DB_USER:     tetris
-      DB_PASSWORD: tetrispassword   # Use Docker secrets in production!
+      DB_PASSWORD: tetrispassword 
       FLASK_ENV:   development
       PORT:        "5000"
       APP_VERSION: "1.0.0"
     depends_on:
       postgres:
-        condition: service_healthy  # Wait for DB to be ready
+        condition: service_healthy 
     networks:
       - tetris-net
     restart: unless-stopped
@@ -66,7 +66,7 @@ services:
       - postgres-data:/var/lib/postgresql/data   # Persist DB data
       - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro  # Init schema
     ports:
-      - "5432:5432"      # Optional: expose for local DB tools (DBeaver, pgAdmin)
+      - "5432:5432"
     networks:
       - tetris-net
     restart: unless-stopped

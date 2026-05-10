@@ -97,16 +97,6 @@ spec:
   type: ClusterIP    # Exposed externally via Ingress (preferred over NodePort/LB per service)
 
 ---
-# ──────────────────────────────────────────────────────────────
-# Ingress — Single entry point for all external traffic
-# Routes:
-#   /       → frontend-service:80
-#   /api/*  → backend-service:5000  (strip /api prefix)
-#
-# Requires: nginx ingress controller installed
-#   Minikube: minikube addons enable ingress
-#   Others:   helm install ingress-nginx ingress-nginx/ingress-nginx
-# ──────────────────────────────────────────────────────────────
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

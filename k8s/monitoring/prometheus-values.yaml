@@ -1,7 +1,7 @@
 # ── Grafana ────────────────────────────────────────────────
 grafana:
   enabled: true
-  adminPassword: "admin123"    # Change this! Use a K8s secret in production.
+  adminPassword: "admin123" 
 
   service:
     type: ClusterIP

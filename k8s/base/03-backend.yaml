@@ -20,8 +20,8 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 0     # Never take all replicas down at once
-      maxSurge: 1           # Temporarily run 1 extra pod during updates
+      maxUnavailable: 0 
+      maxSurge: 1           
   template:
     metadata:
       labels:
@@ -43,9 +43,8 @@ spec:
  
       containers:
         - name: backend
-          # UPDATE THIS: replace 'yourdockerhubuser' with your Docker Hub username
           image: yourdockerhubuser/tetris-backend:latest
-          imagePullPolicy: Always   # Always pull in production to get security patches
+          imagePullPolicy: Always
  
           ports:
             - containerPort: 5000
