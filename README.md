@@ -6,7 +6,7 @@
 ![Prometheus](https://img.shields.io/badge/Prometheus-Monitoring-E6522C?style=for-the-badge&logo=prometheus)
 ![Grafana](https://img.shields.io/badge/Grafana-Dashboard-F46800?style=for-the-badge&logo=grafana)
 
-# 🚀 Three-Tier Cloud-Native DevOps Project
+#  Three-Tier Cloud-Native DevOps Project
 
 A complete cloud-native DevOps portfolio project built around a Tetris application using Docker, CI/CD, Kubernetes, GitOps, DevSecOps, Monitoring, and Observability practices.
 
